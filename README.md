@@ -2,7 +2,7 @@
 
 A Fruit Ninja style game played with your **webcam**. Move your **index finger** (one hand or both hands) fast to cut the fruits that fly up from the bottom of the screen.
 
-Version 1: fruits are simple 2D shapes (circle, square, triangle) with random colours.
+Fruits are 12 neon 2D shapes (circle, oval, square, rectangle, triangle, diamond, pentagon, hexagon, octagon, star, heart, cross): flat colour inside, glowing border. You can cut a fruit, then cut its pieces again (up to 3 levels).
 
 ## How it works
 
@@ -24,8 +24,8 @@ Webcam frame ──► flip (mirror) ──► MediaPipe Hand Landmarker ──�
 | `camera.py` | Webcam in a background thread (MJPG, buffer size 1) |
 | `hand_tracker.py` | MediaPipe Tasks API (async LIVE_STREAM), finger guard, One Euro filter |
 | `blade.py` | Finger trail, speed, draws the blade |
-| `fruit.py` | Shapes, physics (gravity), slicing, spawner (difficulty goes up over time) |
-| `geometry.py` | Polygon split, segment/polygon hit test (pure numpy) |
+| `fruit.py` | 12 shapes (same area), neon drawing, physics, multi-cut slicing, spawner |
+| `geometry.py` | Hit test (numpy) + polygon split by a line (shapely, works for concave shapes) |
 | `effects.py` | Juice particles, cut flash, floating text |
 | `game.py` | Game rules: score, combo, draw HUD |
 | `config.py` | **All settings** (speed, gravity, sizes, colours...) |
@@ -65,7 +65,7 @@ The circle on your finger turns **green** when you move fast enough to cut.
 
 ## Scoring
 
-- Each fruit: **+1**
+- Each fruit: **+1**, each extra cut of a piece: **+1** (`MAX_CUTS_PER_FRUIT`, `PIECE_MIN_AREA` in `config.py`)
 - **Combo**: cut 3 or more fruits with less than 0.35 s between cuts → bonus **+N** (N = number of fruits in the combo)
 - Best score is saved in `highscore.json`
 
@@ -85,6 +85,8 @@ The top-right corner of the game shows 3 numbers:
 ## Tuning tips
 
 - Cuts do not register → lower `BLADE_MIN_SPEED` in `config.py`.
+- Waves: `WAVE_REST` (rest after a wave is cleared), `WAVE_SIZE_*`, `WAVE_STAGGER`.
+- Neon look → `NEON_COLORS`, `FILL_BRIGHTNESS`, `GLOW_WIDTH`, `GLOW_BLUR`.
 - Game is slow (low FPS) → lower `DETECT_WIDTH` (e.g. 480) or `GAME_WIDTH/GAME_HEIGHT` (e.g. 960×540).
 - Finger cursor shakes → lower `FILTER_MIN_CUTOFF` (more smoothing). Blade feels laggy → raise it.
 - Use good light and a plain background: MediaPipe loses fast hands when the image is blurry.

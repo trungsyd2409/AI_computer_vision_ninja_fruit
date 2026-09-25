@@ -11,6 +11,7 @@ import cv2
 import config
 from camera import Camera
 from effects import draw_text
+from fps import FpsCounter
 from game import Game
 from hand_tracker import HandTracker
 
@@ -61,7 +62,7 @@ def main():
 
     last_id = 0
     last = time.perf_counter()
-    fps = 0.0
+    game_fps = FpsCounter()
     try:
         while True:
             timer.t = time.perf_counter()
@@ -84,14 +85,15 @@ def main():
             now = time.perf_counter()
             dt = now - last
             last = now
-            fps = 0.9 * fps + 0.1 * (1.0 / max(dt, 1e-3))
+            game_fps.tick(now)
             game.update(dt, now, tracking)
             timer.mark("game update")
 
-            stats = {"fps": {"game": fps, "camera": cam.fps, "tracking": tracker.fps}}
+            stats = {"fps": {"game": game_fps.value, "camera": cam.fps, "tracking": tracker.fps}}
             if show_timing:
                 stats["lines"] = [f"{k:<18} {v:5.1f} ms" for k, v in timer.ms.items()]
                 stats["lines"].append(f"{'track latency':<18} {tracker.latency_ms:5.1f} ms")
+                stats["lines"].append(f"{'dup cam frames':<18} {cam.duplicates}/{cam.total}")
             out = game.draw(frame, now, stats, tracker.last_landmarks if show_landmarks else None)
             if tracker.log_rows is not None:
                 cv2.circle(out, (config.GAME_WIDTH // 2 - 60, 100), 10, (0, 0, 255), -1)

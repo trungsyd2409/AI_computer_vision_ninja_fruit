@@ -9,20 +9,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config  # noqa: E402
 from fruit import Piece, make_shape  # noqa: E402
 from game import Game  # noqa: E402
-from geometry import polygon_area, segment_hits_polygon, split_polygon  # noqa: E402
+from geometry import polygon_area, segment_hits_polygon, split_by_line  # noqa: E402
 
 
 def test_split_square_in_half():
     sq = make_shape("square", 50)
-    a, b, cut = split_polygon(sq, np.array([0.0, 0.0]), np.array([1.0, 0.0]))
+    a, b = split_by_line(sq, np.array([0.0, 0.0]), np.array([1.0, 0.0]))
     assert abs(polygon_area(a) + polygon_area(b) - polygon_area(sq)) < 1e-6
     assert abs(polygon_area(a) - polygon_area(b)) < 1e-6
-    assert cut.shape == (2, 2)
 
 
 def test_split_misses():
     tri = make_shape("triangle", 50)
-    assert split_polygon(tri, np.array([0.0, 500.0]), np.array([1.0, 0.0])) is None
+    assert split_by_line(tri, np.array([0.0, 500.0]), np.array([1.0, 0.0])) == []
+
+
+def test_split_star_two_arms_gives_3_pieces():
+    star = make_shape("star", 50)
+    low = star[:, 1].max()                        # cut near the bottom: through 2 arms
+    pieces = split_by_line(star, np.array([0.0, low * 0.7]), np.array([1.0, 0.0]))
+    assert len(pieces) == 3
+    assert abs(sum(polygon_area(p) for p in pieces) - polygon_area(star)) < 1e-3
+
+
+def test_all_shapes_same_area():
+    for shape in config.SHAPES:
+        assert abs(polygon_area(make_shape(shape, 50)) - np.pi * 50 ** 2) < 1.0, shape
 
 
 def test_segment_hit():
@@ -35,7 +47,7 @@ def test_slice_keeps_area():
     for shape in config.SHAPES:
         f = Piece(make_shape(shape, 50), (300, 300), (0, 0), (0, 0, 255), angle=0.7, shape=shape, radius=50)
         halves = f.slice(np.array([200.0, 290]), np.array([400.0, 320]))
-        assert len(halves) == 2
+        assert len(halves) >= 2
         total = sum(polygon_area(h.world_poly()) for h in halves)
         assert abs(total - polygon_area(f.world_poly())) < 1e-3
 
@@ -113,6 +125,72 @@ def test_blade_keeps_stroke_at_low_fps():
     b.age(0.1)
     seg = b.add((700, 300), 0.1)              # 10 fps, 600 px jump = 6000 px/s -> real swipe
     assert seg is not None
+
+
+def test_fps_counter_bursty_frames():
+    from fps import FpsCounter
+    c, t = FpsCounter(), 0.0
+    for i in range(60):                 # frames in pairs: 2 ms apart, then 64 ms gap
+        t += 0.002 if i % 2 else 0.064
+        c.tick(t)
+    assert 28 < c.value < 33            # real rate ~30 fps (old 1/dt average said ~250)
+
+
+def test_piece_can_be_cut_again():
+    f = Piece(make_shape("hexagon", 60), (300, 300), (0, 0), (0, 0, 255), shape="hexagon")
+    halves = f.slice(np.array([150.0, 300]), np.array([450.0, 300]))
+    h = halves[0]
+    assert h.generation == 1 and not h.can_be_cut        # cooldown: not by the same swipe
+    h.age = config.PIECE_CUT_COOLDOWN + 0.01
+    assert h.can_be_cut
+    quarters = h.slice(h.pos - [0, 100], h.pos + [0, 100])
+    assert len(quarters) == 2 and quarters[0].generation == 2
+    deep = Piece(make_shape("circle", 60), (0, 0), (0, 0), (0, 0, 255), generation=config.MAX_CUTS_PER_FRUIT)
+    deep.age = 1.0
+    assert not deep.can_be_cut                           # max depth reached
+
+
+def test_game_multi_cut_scores():
+    config.HIGHSCORE_FILE = "/tmp/hs_test2.json"
+    game = Game()
+    game.spawner.next_wave = 1e9
+    g = config.GRAVITY
+    config.GRAVITY = 0
+    try:
+        game.fruits.append(Piece(make_shape("square", 60), (640, 360), (0, 0), (0, 0, 255), shape="square"))
+        t = swipe(game, game.fruits, 360, 0.0)          # cut 1 -> 2 halves
+        pieces = list(game.halves)
+        for p in pieces:
+            p.vel[:] = 0
+        t += 0.3                                        # wait for the cooldown
+        for i in range(8):                              # vertical swipe through both halves
+            game.update(1 / 30, t, [({"Right": (640, 150 + i * 60)}, t)])
+            t += 1 / 30
+    finally:
+        config.GRAVITY = g
+    assert game.sliced == 1
+    assert game.cuts >= 2
+
+
+def test_spawner_waits_for_wave_to_clear():
+    from fruit import Spawner
+    sp, t, dt = Spawner(), 0.0, 1 / 60
+    thrown = []
+    while not thrown:                           # first wave after WAVE_FIRST_DELAY
+        thrown += sp.update(dt, 0)
+        t += dt
+    assert abs(t - config.WAVE_FIRST_DELAY) < 0.05
+    while sp.queue:                             # rest of the wave (staggered)
+        thrown += sp.update(dt, len(thrown))
+    n_first = len(thrown)
+    for _ in range(300):                        # 5 s with fruits still flying -> no new wave
+        assert sp.update(dt, on_screen=1) == []
+    t_clear, new = 0.0, []
+    while not new:                              # screen cleared -> next wave after WAVE_REST
+        new = sp.update(dt, 0)
+        t_clear += dt
+    assert abs(t_clear - config.WAVE_REST) < 0.05
+    assert sp.wave == 2 and n_first >= 1
 
 
 if __name__ == "__main__":

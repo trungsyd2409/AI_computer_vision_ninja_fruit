@@ -1,8 +1,11 @@
 """Small 2D geometry helpers (pure numpy, no OpenCV).
 
 Polygons are numpy arrays of shape (N, 2) with float points in order.
+They can be concave (star, heart, cross).
 """
 import numpy as np
+from shapely.geometry import LineString, Polygon
+from shapely.ops import split
 
 
 def cross2(a, b):
@@ -66,29 +69,34 @@ def segment_hits_polygon(a, b, poly):
     return False
 
 
-def split_polygon(poly, point, direction):
-    """Cut a CONVEX polygon with an infinite line (point + t * direction).
+def split_by_line(poly, point, direction):
+    """Cut ANY simple polygon (convex or not, e.g. a star) with an infinite line.
 
-    Returns (piece_a, piece_b, cut_edge) or None if the line misses the polygon.
-    cut_edge is a (2, 2) array with the two points where the line crosses.
+    Returns a list of pieces (numpy arrays). A convex shape gives 2 pieces,
+    a star cut through two arms can give 3 or more. [] if the line misses.
+    Uses shapely (a GIS geometry library) because splitting concave polygons
+    correctly is tricky to write by hand.
     """
-    d = direction / (np.linalg.norm(direction) + 1e-9)
-    side = cross2(np.broadcast_to(d, poly.shape), poly - point)  # >0 left, <0 right
-    piece_a, piece_b, cut_pts = [], [], []
-    n = len(poly)
-    for i in range(n):
-        p, q = poly[i], poly[(i + 1) % n]
-        sp, sq = side[i], side[(i + 1) % n]
-        if sp >= 0:
-            piece_a.append(p)
-        if sp <= 0:
-            piece_b.append(p)
-        if (sp > 0 and sq < 0) or (sp < 0 and sq > 0):
-            t = sp / (sp - sq)
-            x = p + t * (q - p)
-            piece_a.append(x)
-            piece_b.append(x)
-            cut_pts.append(x)
-    if len(piece_a) < 3 or len(piece_b) < 3 or len(cut_pts) < 2:
-        return None
-    return np.array(piece_a), np.array(piece_b), np.array(cut_pts[:2])
+    d = np.asarray(direction, float)
+    d = d / (np.linalg.norm(d) + 1e-9)
+    far = 10000.0
+    line = LineString([tuple(point - d * far), tuple(point + d * far)])
+    shape = Polygon(poly)
+    if not shape.is_valid:
+        shape = shape.buffer(0)          # fixes small self-intersections
+    if not shape.intersects(line):
+        return []
+    pieces = []
+    for g in split(shape, line).geoms:
+        if isinstance(g, Polygon) and g.area > 1.0:
+            pieces.append(np.array(g.exterior.coords)[:-1])   # last point = first point
+    return pieces if len(pieces) >= 2 else []
+
+
+def edges_on_line(poly, point, direction, tol=0.5):
+    """Boolean per edge i (poly[i] -> poly[i+1]): True if the edge lies on the cut line."""
+    d = np.asarray(direction, float)
+    d = d / (np.linalg.norm(d) + 1e-9)
+    dist = np.abs(cross2(np.broadcast_to(d, poly.shape), poly - point))
+    on = dist < tol
+    return on & np.roll(on, -1)

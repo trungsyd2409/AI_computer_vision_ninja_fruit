@@ -39,7 +39,8 @@ class Game:
         self.effects = Effects()
         self.spawner = Spawner()
         self.score = 0
-        self.sliced = 0
+        self.sliced = 0            # whole fruits cut
+        self.cuts = 0              # all cuts (fruits + pieces)
         self.missed = 0
         self.combo_count = 0
         self.combo_pos = None
@@ -68,16 +69,18 @@ class Game:
             return
 
         # 2) spawn + move
-        self.fruits.extend(self.spawner.update(dt))
+        self.fruits.extend(self.spawner.update(dt, len(self.fruits)))
         for p in self.fruits + self.halves:
             p.update(dt)
 
-        # 3) slicing
+        # 3) slicing: whole fruits AND pieces can be cut (pieces: see Piece.can_be_cut)
+        new_pieces = []
         for a, b in segments:
-            for fruit in self.fruits:
-                if fruit.alive and fruit.hit_by(a, b):
-                    self._cut(fruit, a, b, now)
+            for piece in self.fruits + self.halves:
+                if piece.alive and piece.can_be_cut and piece.hit_by(a, b):
+                    new_pieces.extend(self._cut(piece, a, b, now))
         self.fruits = [f for f in self.fruits if f.alive]
+        self.halves = [h for h in self.halves if h.alive] + new_pieces
 
         # 4) remove pieces that fell off the screen
         for f in self.fruits:
@@ -94,13 +97,20 @@ class Game:
         self.effects.update(dt)
 
     def _cut(self, fruit, a, b, now):
+        """Cut one fruit or piece. Returns the new pieces."""
+        pieces = fruit.slice(a, b)
+        if not pieces:
+            return []
         fruit.alive = False
-        self.halves.extend(fruit.slice(a, b))
-        self.effects.splash(fruit.pos, fruit.color)
+        size = min(1.0, fruit.area / (3.14 * config.FRUIT_RADIUS_MAX ** 2))   # small piece = small splash
+        self.effects.splash(fruit.pos, fruit.color, max(4, int(config.PARTICLES_PER_SLICE * size)))
         self.effects.add(CutFlash(a, b, fruit.pos.copy(), fruit.radius))
-        self.score += config.POINTS_PER_FRUIT
-        self.sliced += 1
-        self.effects.add(FloatingText(f"+{config.POINTS_PER_FRUIT}", fruit.pos.copy(), scale=0.9))
+        points = config.POINTS_PER_FRUIT if fruit.generation == 0 else config.POINTS_PER_PIECE
+        self.score += points
+        self.cuts += 1
+        if fruit.generation == 0:
+            self.sliced += 1
+        self.effects.add(FloatingText(f"+{points}", fruit.pos.copy(), scale=0.9 if fruit.generation == 0 else 0.7))
 
         if now - self.last_cut_time <= config.COMBO_WINDOW:
             self.combo_count += 1
@@ -109,6 +119,7 @@ class Game:
             self.combo_count = 1
         self.last_cut_time = now
         self.combo_pos = fruit.pos.copy()
+        return pieces
 
     def _finish_combo(self):
         n = self.combo_count
@@ -136,19 +147,23 @@ class Game:
                     color = (0, 0, 255) if i in (5, 6, 8) else (0, 255, 255)   # index finger in red
                     cv2.circle(canvas, (int(x), int(y)), 4 if i in (5, 6, 8) else 3, color, -1)
 
-        for h in self.halves:
-            h.draw(canvas)
-        for f in self.fruits:
-            f.draw(canvas)
+        pieces = self.halves + self.fruits
+        # pass 1: everything that glows goes on the glow layer
+        for p in pieces:
+            p.draw_glow(glow)
         self.effects.draw(canvas, glow)
         for blade in self.blades.values():
             blade.draw_glow(glow)
 
-        # soft glow: blur a small copy (fast) and add it on top
-        small = cv2.resize(glow, (canvas.shape[1] // 4, canvas.shape[0] // 4))
-        small = cv2.GaussianBlur(small, (0, 0), 2.5)
+        # soft glow: blur a small copy (fast) and ADD it to the image (light adds up)
+        small = cv2.resize(glow, (canvas.shape[1] // 4, canvas.shape[0] // 4), interpolation=cv2.INTER_AREA)
+        small = cv2.GaussianBlur(small, (0, 0), config.GLOW_BLUR)
         canvas = cv2.add(canvas, cv2.resize(small, (canvas.shape[1], canvas.shape[0])))
-        # blade cores are drawn last so they stay sharp on top of everything
+
+        # pass 2: sharp shapes on top (flat fill + bright border), then blade cores
+        for p in pieces:
+            p.draw(canvas)
+        self.effects.draw_top(canvas)
         for blade in self.blades.values():
             blade.draw_core(canvas)
 
@@ -158,8 +173,8 @@ class Game:
     def _draw_hud(self, canvas, stats):
         W, H = config.GAME_WIDTH, config.GAME_HEIGHT
         draw_text(canvas, f"SCORE {self.score}", (25, 55), 1.4, (255, 255, 255), 3)
-        draw_text(canvas, f"BEST {self.best}", (25, 95), 0.8, (200, 255, 200))
-        draw_text(canvas, f"Sliced {self.sliced}   Missed {self.missed}   Best combo {self.best_combo}",
+        draw_text(canvas, f"BEST {self.best}   WAVE {self.spawner.wave}", (25, 95), 0.8, (200, 255, 200))
+        draw_text(canvas, f"Fruits {self.sliced}   Cuts {self.cuts}   Missed {self.missed}   Best combo {self.best_combo}",
                   (25, H - 25), 0.6, (230, 230, 230), 1)
         fps_text = "   ".join(f"{k} {v:.0f}" for k, v in stats.get("fps", {}).items())
         if fps_text:

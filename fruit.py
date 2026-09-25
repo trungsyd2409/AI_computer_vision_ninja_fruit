@@ -1,5 +1,4 @@
-"""Fruits (simple 2D shapes), their halves after a cut, and the spawner."""
-import colorsys
+"""Fruits (2D neon shapes), the pieces after a cut, and the spawner."""
 import math
 import random
 
@@ -7,61 +6,116 @@ import cv2
 import numpy as np
 
 import config
-from geometry import polygon_centroid, segment_hits_polygon, split_polygon
+from geometry import (edges_on_line, polygon_area, polygon_centroid,
+                      segment_hits_polygon, split_by_line)
 
 
-def make_shape(shape, r):
-    """Return polygon points (local, centred at 0,0) for a shape of 'radius' r."""
-    if shape == "circle":
-        k = 32
-    elif shape == "square":
-        k = 4
-    elif shape == "triangle":
-        k = 3
-    else:
-        raise ValueError(shape)
-    start = math.pi / 4 if shape == "square" else -math.pi / 2
+# ---------------------------------------------------------------- shapes
+def _regular(k, r, start=-math.pi / 2):
     ang = start + np.arange(k) * 2 * math.pi / k
     return np.stack([np.cos(ang) * r, np.sin(ang) * r], axis=1)
 
 
-# square and triangle look smaller than a circle with the same radius
-SHAPE_SCALE = {"circle": 1.0, "square": 1.2, "triangle": 1.4}
+def _base_shape(shape):
+    """Shape with 'radius' about 1, centred at (0, 0)."""
+    if shape == "circle":
+        return _regular(32, 1.0)
+    if shape == "oval":
+        p = _regular(32, 1.0)
+        return p * [1.0, 0.68]
+    if shape == "square":
+        return _regular(4, 1.0, math.pi / 4)
+    if shape == "rectangle":
+        return np.array([[-1.0, -0.6], [1.0, -0.6], [1.0, 0.6], [-1.0, 0.6]])
+    if shape == "triangle":
+        return _regular(3, 1.0)
+    if shape == "diamond":
+        return np.array([[0, -1.0], [0.62, 0], [0, 1.0], [-0.62, 0]])
+    if shape == "pentagon":
+        return _regular(5, 1.0)
+    if shape == "hexagon":
+        return _regular(6, 1.0, 0)
+    if shape == "octagon":
+        return _regular(8, 1.0, math.pi / 8)
+    if shape == "star":                                    # 5 points, concave
+        ang = -math.pi / 2 + np.arange(10) * math.pi / 5
+        rad = np.where(np.arange(10) % 2 == 0, 1.0, 0.45)
+        return np.stack([np.cos(ang) * rad, np.sin(ang) * rad], axis=1)
+    if shape == "heart":                                   # classic heart curve, concave
+        t = np.linspace(0, 2 * math.pi, 40, endpoint=False)
+        x = 16 * np.sin(t) ** 3
+        y = -(13 * np.cos(t) - 5 * np.cos(2 * t) - 2 * np.cos(3 * t) - np.cos(4 * t))
+        return np.stack([x, y], axis=1) / 16.0
+    if shape == "cross":                                   # plus sign, concave
+        a, b = 1.0, 0.34
+        return np.array([[-b, -a], [b, -a], [b, -b], [a, -b], [a, b], [b, b],
+                         [b, a], [-b, a], [-b, b], [-a, b], [-a, -b], [-b, -b]])
+    raise ValueError(f"unknown shape {shape}")
 
 
+def make_shape(shape, r):
+    """Polygon for `shape` with the SAME AREA as a circle of radius r
+    (so a star is not tiny next to a circle). Centred at its centroid."""
+    p = _base_shape(shape)
+    p = p - polygon_centroid(p)
+    scale = r * math.sqrt(math.pi / polygon_area(p))
+    return p * scale
+
+
+# ---------------------------------------------------------------- colours
 def random_color():
-    """Bright random colour in BGR."""
-    h = random.random()
-    r, g, b = colorsys.hsv_to_rgb(h, random.uniform(0.7, 1.0), random.uniform(0.85, 1.0))
-    return (int(b * 255), int(g * 255), int(r * 255))
+    return random.choice(config.NEON_COLORS)
 
 
 def mix(c1, c2, t):
     return tuple(int(a * (1 - t) + b * t) for a, b in zip(c1, c2))
 
 
+def scale_color(c, k):
+    return tuple(int(v * k) for v in c)
+
+
+# ---------------------------------------------------------------- piece
 class Piece:
-    """A flying polygon. A whole fruit and each half are both Pieces."""
+    """A flying polygon. A whole fruit and every cut piece are Pieces.
+
+    generation 0 = whole fruit, 1 = piece after 1 cut, 2 = piece of a piece...
+    """
 
     def __init__(self, local_poly, pos, vel, color, angle=0.0, spin=0.0,
-                 is_half=False, cut_edge=None, shape="", radius=0.0):
-        self.local = local_poly
+                 generation=0, cut_edges=None, shape="", radius=None):
+        self.local = np.asarray(local_poly, dtype=float)
         self.pos = np.array(pos, dtype=float)
         self.vel = np.array(vel, dtype=float)
         self.color = color
         self.angle = angle
         self.spin = spin
-        self.is_half = is_half
-        self.cut_edge = cut_edge          # local points of the cut (halves only)
+        self.generation = generation
+        self.cut_edges = cut_edges            # bool per edge: True = fresh cut (drawn white-hot)
         self.shape = shape
-        self.radius = radius
+        self.radius = radius if radius is not None else float(np.linalg.norm(self.local, axis=1).max())
+        self.area = polygon_area(self.local)
+        self.age = 0.0
         self.alive = True
+
+    @property
+    def is_half(self):
+        return self.generation > 0
+
+    @property
+    def can_be_cut(self):
+        if self.generation == 0:
+            return True
+        return (self.generation < config.MAX_CUTS_PER_FRUIT
+                and self.area >= config.PIECE_MIN_AREA
+                and self.age >= config.PIECE_CUT_COOLDOWN)
 
     # ---------- physics ----------
     def update(self, dt):
         self.vel[1] += config.GRAVITY * dt
         self.pos += self.vel * dt
         self.angle += self.spin * dt
+        self.age += dt
 
     def _rot(self, pts):
         c, s = math.cos(self.angle), math.sin(self.angle)
@@ -84,50 +138,66 @@ class Piece:
         return segment_hits_polygon(a, b, self.world_poly())
 
     def slice(self, a, b):
-        """Cut along the blade direction. Return two half Pieces (or [])."""
+        """Cut along the blade direction. Return the new pieces (2 or more), or []."""
         poly = self.world_poly()
         d = b - a
         d = d / (np.linalg.norm(d) + 1e-9)
-        # point on the blade line closest to the fruit centre,
-        # pulled towards the centre so we never cut off a tiny sliver
+        # point on the blade line closest to the centre, pulled towards the centre
+        # so we never cut off a tiny sliver
         foot = a + np.dot(self.pos - a, d) * d
         offset = foot - self.pos
         max_off = 0.35 * self.radius
         if np.linalg.norm(offset) > max_off:
             offset = offset / np.linalg.norm(offset) * max_off
-        result = split_polygon(poly, self.pos + offset, d)
-        if result is None:
-            result = split_polygon(poly, self.pos, d)
-            if result is None:
-                return []
-        piece_a, piece_b, cut = result
-        normal = np.array([-d[1], d[0]])   # points to the side of piece_a
-        halves = []
-        for piece, sign in ((piece_a, 1), (piece_b, -1)):
-            c = polygon_centroid(piece)
-            vel = self.vel * 0.6 + sign * normal * config.HALF_PUSH_SPEED
-            spin = self.spin + sign * random.uniform(1.5, 4.0)
-            halves.append(Piece(piece - c, c, vel, self.color, 0.0, spin,
-                                is_half=True, cut_edge=cut - c, radius=self.radius))
-        return halves
+        p = self.pos + offset
+        parts = split_by_line(poly, p, d)
+        if not parts:
+            p = self.pos
+            parts = split_by_line(poly, p, d)
+        normal = np.array([-d[1], d[0]])
+        pieces = []
+        for part in parts:
+            c = polygon_centroid(part)
+            side = 1.0 if np.dot(c - p, normal) >= 0 else -1.0
+            vel = self.vel * 0.6 + side * normal * config.HALF_PUSH_SPEED * random.uniform(0.8, 1.2)
+            spin = self.spin + side * random.uniform(1.5, 4.0)
+            pieces.append(Piece(part - c, c, vel, self.color, 0.0, spin,
+                                generation=self.generation + 1,
+                                cut_edges=edges_on_line(part, p, d)))
+        return pieces
 
     # ---------- drawing ----------
-    def draw(self, canvas):
+    def _fresh_cut(self):
+        """How hot the fresh cut edge is: 1 just after the cut -> 0 after 0.6 s."""
+        if self.cut_edges is None or not self.cut_edges.any():
+            return 0.0
+        return max(0.0, 1.0 - self.age / 0.6)
+
+    def draw_glow(self, glow):
+        """Pass 1: wide border on the glow layer (it gets blurred later).
+        LINE_8 is enough here (faster than LINE_AA) because the glow is blurred anyway."""
         pts = self.world_poly().astype(np.int32)
-        dark = mix(self.color, (0, 0, 0), 0.45)
-        if not self.is_half:
-            cv2.fillPoly(canvas, [pts], self.color, cv2.LINE_AA)
-            # lighter inner shape -> simple "3D" look
-            inner = (self.world_poly() - self.pos) * 0.6 + self.pos + np.array([-self.radius * 0.12, -self.radius * 0.12])
-            cv2.fillPoly(canvas, [inner.astype(np.int32)], mix(self.color, (255, 255, 255), 0.25), cv2.LINE_AA)
-            cv2.polylines(canvas, [pts], True, dark, 3, cv2.LINE_AA)
-        else:
-            flesh = mix(self.color, (255, 255, 255), 0.55)
-            cv2.fillPoly(canvas, [pts], flesh, cv2.LINE_AA)
-            cv2.polylines(canvas, [pts], True, self.color, 7, cv2.LINE_AA)   # the "skin"
-            cut = self._rot(self.cut_edge).astype(np.int32)
-            cv2.line(canvas, tuple(cut[0]), tuple(cut[1]), flesh, 7, cv2.LINE_AA)
-            cv2.line(canvas, tuple(cut[0]), tuple(cut[1]), (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.polylines(glow, [pts], True, self.color, config.GLOW_WIDTH, cv2.LINE_8)
+        heat = self._fresh_cut()
+        if heat > 0:
+            hot = mix(self.color, (255, 255, 255), 0.35 + 0.65 * heat)
+            for i in np.flatnonzero(self.cut_edges):
+                cv2.line(glow, tuple(pts[i]), tuple(pts[(i + 1) % len(pts)]), hot,
+                         config.GLOW_WIDTH, cv2.LINE_8)
+
+    def draw(self, canvas):
+        """Pass 2 (after the glow): flat colour inside + sharp bright border.
+        Drawing the fill AFTER the glow keeps the inside flat (no glow inside)."""
+        pts = self.world_poly().astype(np.int32)
+        cv2.fillPoly(canvas, [pts], scale_color(self.color, config.FILL_BRIGHTNESS), cv2.LINE_AA)
+        cv2.polylines(canvas, [pts], True, mix(self.color, (255, 255, 255), 0.35),
+                      config.BORDER_WIDTH, cv2.LINE_AA)
+        heat = self._fresh_cut()
+        if heat > 0:
+            hot = mix(self.color, (255, 255, 255), 0.35 + 0.65 * heat)
+            for i in np.flatnonzero(self.cut_edges):
+                cv2.line(canvas, tuple(pts[i]), tuple(pts[(i + 1) % len(pts)]), hot,
+                         config.BORDER_WIDTH, cv2.LINE_AA)
 
 
 def launch_fruit():
@@ -135,41 +205,54 @@ def launch_fruit():
     W, H = config.GAME_WIDTH, config.GAME_HEIGHT
     shape = random.choice(config.SHAPES)
     r = random.uniform(config.FRUIT_RADIUS_MIN, config.FRUIT_RADIUS_MAX)
-    r *= SHAPE_SCALE[shape]   # so all shapes look about the same size
+    local = make_shape(shape, r)
+    radius = float(np.linalg.norm(local, axis=1).max())
     x0 = random.uniform(0.15 * W, 0.85 * W)
-    y0 = H + r
+    y0 = H + radius
     peak_y = random.uniform(config.PEAK_HEIGHT_MIN, config.PEAK_HEIGHT_MAX) * H
     vy = -math.sqrt(2 * config.GRAVITY * (y0 - peak_y))
     flight_time = 2 * -vy / config.GRAVITY
     target_x = random.uniform(0.25 * W, 0.75 * W)
     vx = (target_x - x0) / flight_time
-    return Piece(make_shape(shape, r), (x0, y0), (vx, vy), random_color(),
+    return Piece(local, (x0, y0), (vx, vy), random_color(),
                  angle=random.uniform(0, 2 * math.pi),
                  spin=random.uniform(-config.SPIN_MAX, config.SPIN_MAX),
-                 shape=shape, radius=r)
+                 shape=shape, radius=radius)
 
 
 class Spawner:
-    """Throws waves of fruits. Waves get bigger and faster over time."""
+    """Throws fruits in WAVES.
+
+    1. throw a wave (fruits come very close together)
+    2. wait until every whole fruit is gone (cut or fell off the screen)
+    3. rest WAVE_REST seconds, then the next (bigger) wave
+    """
 
     def __init__(self):
-        self.play_time = 0.0
-        self.next_wave = 1.0   # small delay before the first wave
-        self.queue = []        # (time, fruit) - fruits in a wave come one by one
+        self.wave = 0
+        self.next_wave = config.WAVE_FIRST_DELAY   # rest countdown (runs only when screen is clear)
+        self.queue = []        # [delay, fruit] - fruits of the current wave not thrown yet
 
-    def update(self, dt):
-        self.play_time += dt
-        new_fruits = []
-        self.next_wave -= dt
-        if self.next_wave <= 0:
-            size = min(config.WAVE_SIZE_MAX,
-                       config.WAVE_SIZE_START + int(self.play_time // config.WAVE_SIZE_GROW_EVERY))
-            size = random.randint(max(1, size - 1), size)
-            for i in range(size):
-                self.queue.append([i * random.uniform(0.05, 0.25), launch_fruit()])
-            interval = max(config.SPAWN_INTERVAL_MIN,
-                           config.SPAWN_INTERVAL_START - config.SPAWN_INTERVAL_DECAY * self.play_time)
-            self.next_wave = interval + 0.3 * size
+    def wave_size(self):
+        size = config.WAVE_SIZE_START + self.wave // config.WAVE_SIZE_GROW_EVERY
+        return min(config.WAVE_SIZE_MAX, config.MAX_FRUITS_ON_SCREEN, size)
+
+    def _start_wave(self):
+        self.wave += 1
+        size = self.wave_size()
+        size = random.randint(max(1, size - 1), size)
+        delay = 0.0
+        for _ in range(size):
+            self.queue.append([delay, launch_fruit()])
+            delay += random.uniform(0, config.WAVE_STAGGER)
+
+    def update(self, dt, on_screen=0):
+        """on_screen = number of whole fruits still flying. Returns fruits to add now."""
+        if not self.queue and on_screen == 0:     # wave cleared -> rest, then next wave
+            self.next_wave -= dt
+            if self.next_wave <= 0:
+                self._start_wave()
+                self.next_wave = config.WAVE_REST
         for item in self.queue:
             item[0] -= dt
         new_fruits = [f for t, f in self.queue if t <= 0]

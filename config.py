@@ -9,14 +9,15 @@ GAME_WIDTH = 1280            # the game is drawn at this size
 GAME_HEIGHT = 720
 CAMERA_INDEX = 0             # 0 = default webcam. Try 1, 2 if you have more cameras
 # Camera capture settings. Run `python tools/diagnose.py` to find the best ones for your webcam.
-CAMERA_BACKEND = "dshow"     # "dshow" or "msmf" (Windows), "any" = let OpenCV choose
-CAMERA_FOURCC = "MJPG"       # MJPG = compressed -> most webcams give 30 fps at 720p.
-                             # Without it (raw YUY2) many webcams only give 5-10 fps at 720p!
+CAMERA_BACKEND = "msmf"      # "msmf" or "dshow" (Windows), "any" = let OpenCV choose.
+                             # Measured on this PC (tools/diagnose.py): dshow = only 10 fps at 720p
+                             # (it ignores MJPG and sends raw YUY2), msmf = 30 fps.
+CAMERA_FOURCC = "MJPG"       # MJPG = compressed -> most webcams give 30 fps at 720p
 CAPTURE_WIDTH = 1280
 CAPTURE_HEIGHT = 720
 CAPTURE_FPS = 60             # we ask for 60; the camera gives what it can
-CAMERA_EXPOSURE = None       # None = auto. On Windows/DirectShow try -6 or -7 (shorter
-                             # exposure = less motion blur + higher fps, but darker image)
+CAMERA_EXPOSURE = None       # None = auto. Try -7 or -8 (shorter exposure = less motion blur,
+                             # but darker image). Some cameras ignore this with msmf.
 MIRROR = True                # flip camera like a mirror (feels natural)
 BACKGROUND_DIM = 0.0         # 0.0 = normal camera, 0.5 = camera 50% darker
 FULLSCREEN = False           # press F in game to toggle
@@ -60,29 +61,54 @@ SHOW_TIMING = False          # press T in game: shows ms spent in each step
 TRACK_LOG_DIR = os.path.join(BASE_DIR, "logs")   # press L in game: saves finger data to CSV
 
 # ---------------- Fruits ----------------
-SHAPES = ["circle", "square", "triangle"]
-FRUIT_RADIUS_MIN = 40
-FRUIT_RADIUS_MAX = 60
+SHAPES = ["circle", "oval", "square", "rectangle", "triangle", "diamond",
+          "pentagon", "hexagon", "octagon", "star", "heart", "cross"]
+FRUIT_RADIUS_MIN = 42        # size of a circle; other shapes get the same AREA
+FRUIT_RADIUS_MAX = 62
 GRAVITY = 1400               # px/s^2
 PEAK_HEIGHT_MIN = 0.12       # fruit peak (fraction of screen height from top)
 PEAK_HEIGHT_MAX = 0.45
 SPIN_MAX = 3.0               # rad/s
 
-# Spawning (difficulty goes up slowly over time)
-SPAWN_INTERVAL_START = 1.4   # seconds between waves at the start
-SPAWN_INTERVAL_MIN = 0.6
-SPAWN_INTERVAL_DECAY = 0.01  # interval shrinks by this per second of play
-WAVE_SIZE_START = 1          # fruits per wave at the start
-WAVE_SIZE_MAX = 5
-WAVE_SIZE_GROW_EVERY = 20    # +1 fruit per wave every N seconds
+# Neon colours (BGR). Inside = flat colour, border = bright line + glow
+NEON_COLORS = [
+    (200, 40, 255),   # hot pink
+    (255, 230, 0),    # cyan
+    (40, 255, 120),   # lime
+    (40, 240, 255),   # yellow
+    (20, 140, 255),   # orange
+    (255, 60, 170),   # purple
+    (255, 120, 40),   # electric blue
+    (80, 40, 255),    # red
+    (170, 255, 40),   # mint
+]
+FILL_BRIGHTNESS = 0.55       # inside colour = neon colour * this (darker -> border pops)
+BORDER_WIDTH = 3             # sharp bright border
+GLOW_WIDTH = 14              # width of the soft glow around the border
+GLOW_BLUR = 3.0              # blur of the glow (bigger = softer, wider)
 
-# ---------------- Slicing effects ----------------
-HALF_PUSH_SPEED = 220        # how fast the two halves fly apart (px/s)
+# Spawning (difficulty goes up slowly over time)
+# Spawning in WAVES: throw a wave -> wait until all its fruits are cut or fell ->
+# short rest -> next wave. Waves get bigger over time.
+WAVE_REST = 0.5              # seconds of rest after a wave is cleared
+WAVE_FIRST_DELAY = 1.0       # seconds before the very first wave
+WAVE_STAGGER = 0.12          # max delay between 2 fruits of the same wave (0 = all together)
+WAVE_SIZE_START = 2          # fruits in the first waves
+WAVE_SIZE_MAX = 7
+WAVE_SIZE_GROW_EVERY = 3     # +1 fruit per wave every N waves
+MAX_FRUITS_ON_SCREEN = 16    # whole fruits; keeps FPS stable
+
+# ---------------- Slicing ----------------
+MAX_CUTS_PER_FRUIT = 3       # a fruit can be cut, its pieces cut again... up to 3 levels deep
+PIECE_MIN_AREA = 700         # px^2 - smaller pieces cannot be cut again
+PIECE_CUT_COOLDOWN = 0.15    # s - new pieces cannot be cut by the same swipe right away
+HALF_PUSH_SPEED = 220        # how fast the pieces fly apart (px/s)
 PARTICLES_PER_SLICE = 18
 PARTICLE_LIFE = 0.6
 
 # ---------------- Score / combo ----------------
-POINTS_PER_FRUIT = 1
+POINTS_PER_FRUIT = 1         # first cut of a whole fruit
+POINTS_PER_PIECE = 1         # every extra cut of a piece
 COMBO_WINDOW = 0.35          # cuts closer than this (seconds) join the same combo
 COMBO_MIN = 3                # combo bonus starts at 3 fruits
 HIGHSCORE_FILE = os.path.join(BASE_DIR, "highscore.json")

@@ -22,6 +22,7 @@ import numpy as np
 from mediapipe.tasks.python import BaseOptions, vision
 
 import config
+from fps import FpsCounter
 
 
 def ensure_model(path=config.MODEL_PATH, url=config.MODEL_URL):
@@ -108,8 +109,7 @@ class HandTracker:
         self.ratio_ref = {}            # hand id -> normal |PIP->TIP| / |MCP->PIP|
         self.last_landmarks = []       # for debug drawing
         self.latency_ms = 0.0          # time from submit to result
-        self.fps = 0.0                 # tracking results per second
-        self._last_result_time = None
+        self.counter = FpsCounter()    # tracking results per second
         self.log_rows = None           # list when logging (press L)
 
     # ------------------------------------------------------------ input
@@ -157,9 +157,7 @@ class HandTracker:
             capture_time, w, h, submit_time = info
             now = time.perf_counter()
             self.latency_ms = 0.8 * self.latency_ms + 0.2 * (now - submit_time) * 1000
-            if self._last_result_time is not None:
-                self.fps = 0.9 * self.fps + 0.1 / max(capture_time - self._last_result_time, 1e-3)
-            self._last_result_time = capture_time
+            self.counter.tick(capture_time)
             out.append((self._tips_from_result(result, w, h, capture_time), capture_time))
         return out
 
@@ -197,6 +195,10 @@ class HandTracker:
             if label not in tips:
                 del self.filters[label]
         return tips
+
+    @property
+    def fps(self):
+        return self.counter.value
 
     # ------------------------------------------------------------ logging
     def toggle_log(self):

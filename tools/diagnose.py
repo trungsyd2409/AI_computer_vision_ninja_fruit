@@ -20,7 +20,7 @@ import mediapipe as mp  # noqa: E402
 import numpy as np  # noqa: E402
 
 import config  # noqa: E402
-from camera import describe, open_capture  # noqa: E402
+from camera import describe, open_capture, set_auto_exposure, set_exposure  # noqa: E402
 
 lines = []
 
@@ -30,26 +30,37 @@ def log(msg=""):
     lines.append(msg)
 
 
-def measure_camera(backend, fourcc, w, h, seconds=2.0):
+def measure_camera(backend, fourcc, w, h, seconds=2.0, exposure=None):
+    """Returns dict: reads/s, NEW frames/s (duplicates removed), brightness, ..."""
     t_open = time.perf_counter()
     cap = open_capture(backend=backend, fourcc=fourcc, width=w, height=h, exposure=None)
     open_s = time.perf_counter() - t_open
     if not cap.isOpened():
         return None
+    accepted = None
+    if exposure is not None:
+        accepted = set_exposure(cap, backend, exposure)
     info = describe(cap)
-    for _ in range(5):                      # warm up (first frames are slow)
+    for _ in range(10):                     # warm up (first frames are slow, exposure settles)
         cap.read()
-    n, t0 = 0, time.perf_counter()
+    reads, unique, prev, light = 0, 0, None, []
+    t0 = time.perf_counter()
     while time.perf_counter() - t0 < seconds:
-        ok, _ = cap.read()
+        ok, frame = cap.read()
         if not ok:
             break
-        n += 1
-    fps = n / (time.perf_counter() - t0)
-    exp = cap.get(cv2.CAP_PROP_EXPOSURE)
-    auto = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
+        reads += 1
+        small = frame[::24, ::24]
+        if prev is None or not np.array_equal(small, prev):
+            unique += 1
+            light.append(float(small.mean()))
+        prev = small.copy()
+    el = time.perf_counter() - t0
+    r = dict(reads=reads / el, unique=unique / el, info=info, open_s=open_s,
+             light=np.mean(light) if light else 0.0, accepted=accepted,
+             exposure=cap.get(cv2.CAP_PROP_EXPOSURE), auto=cap.get(cv2.CAP_PROP_AUTO_EXPOSURE))
     cap.release()
-    return fps, info, open_s, exp, auto
+    return r
 
 
 def main():
@@ -59,6 +70,8 @@ def main():
 
     # ---------------------------------------------------------------- camera
     log("\n=== 1. Camera FPS (no MediaPipe, no drawing) ===")
+    log("reads = frames returned by cap.read(), NEW = really new images (copies removed)")
+    log("light = mean brightness 0-255 (below ~70 = dark room -> webcam slows down)")
     backends = ["dshow", "msmf"] if platform.system() == "Windows" else ["any"]
     results = []
     for backend in backends:
@@ -69,18 +82,35 @@ def main():
                 if r is None:
                     log(f"{name}: cannot open")
                     continue
-                fps, info, open_s, exp, auto = r
-                results.append((fps, backend, fourcc, w, h))
-                log(f"{name}: {fps:5.1f} fps | got {info} | open {open_s:.1f}s | exposure {exp} auto {auto}")
+                results.append((r["unique"], backend, fourcc, w, h))
+                log(f"{name}: reads {r['reads']:5.1f}/s | NEW {r['unique']:5.1f} fps | light {r['light']:5.1f}"
+                    f" | got {r['info']} | open {r['open_s']:.1f}s")
     if not results:
         log("No camera found. Check CAMERA_INDEX in config.py")
         return
-    best = max(results, key=lambda r: (round(r[0] / 5), r[3]))   # fps first, then bigger size
-    log(f"\nBest: {best[1]} {best[2] or 'default'} {best[3]}x{best[4]} -> {best[0]:.1f} fps")
+    best = max(results, key=lambda r: (round(r[0] / 3), r[3]))   # fps first, then bigger size
+    log(f"\nBest: {best[1]} {best[2] or 'default'} {best[3]}x{best[4]} -> {best[0]:.1f} NEW fps")
+
+    log("\n=== 1b. Exposure test (is the room too dark?) ===")
+    log("If NEW fps goes up with a shorter exposure, auto exposure is what limits your FPS.")
+    for exp in (None, -5, -6, -7, -8):
+        r = measure_camera(best[1], best[2], best[3], best[4], exposure=exp)
+        if r is None:
+            continue
+        label = "auto" if exp is None else f"{exp} (1/{2 ** -exp} s)"
+        log(f"exposure {label:<13}: NEW {r['unique']:5.1f} fps | light {r['light']:5.1f} | "
+            f"driver accepted={r['accepted']} | reports exposure {r['exposure']} auto {r['auto']}")
+    # the driver may remember the last manual value -> switch auto exposure back on
+    cap = open_capture(backend=best[1], fourcc=best[2], width=best[3], height=best[4], exposure=None)
+    log(f"auto exposure restored: {set_auto_exposure(cap, best[1])}")
+    cap.release()
 
     # ---------------------------------------------------------------- mediapipe
     log("\n=== 2. MediaPipe speed ===")
-    log("Show ONE hand to the camera and move it for ~5 seconds...")
+    log("Show ONE hand to the camera and keep moving it until the test ends (~10 s)")
+    for i in (3, 2, 1):
+        print(f"  starting in {i}...", flush=True)
+        time.sleep(1)
     from mediapipe.tasks.python import BaseOptions, vision
     from hand_tracker import ensure_model
     cap = open_capture(backend=best[1], fourcc=best[2], width=best[3], height=best[4], exposure=None)

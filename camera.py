@@ -10,8 +10,10 @@ import threading
 import time
 
 import cv2
+import numpy as np
 
 import config
+from fps import FpsCounter
 
 BACKENDS = {"dshow": cv2.CAP_DSHOW, "msmf": cv2.CAP_MSMF, "any": cv2.CAP_ANY}
 
@@ -41,9 +43,22 @@ def open_capture(index=config.CAMERA_INDEX, backend=config.CAMERA_BACKEND,
     cap.set(cv2.CAP_PROP_FPS, fps)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)          # do not keep old frames
     if exposure is not None:
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # 0.25 = manual on DirectShow
-        cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
+        set_exposure(cap, backend, exposure)
     return cap
+
+
+def set_exposure(cap, backend, value):
+    """Turn off auto exposure and set a fixed one. value is log2(seconds):
+    -5 = 1/32 s, -6 = 1/64 s, -7 = 1/128 s. Shorter = less blur, darker image.
+    Returns True if the driver accepted it (some drivers ignore it)."""
+    manual = 0.25 if backend == "dshow" else 0   # the "manual" value differs per backend
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, manual)
+    return bool(cap.set(cv2.CAP_PROP_EXPOSURE, value))
+
+
+def set_auto_exposure(cap, backend):
+    """Give exposure control back to the camera (auto mode)."""
+    return bool(cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75 if backend == "dshow" else 1))
 
 
 def describe(cap):
@@ -61,27 +76,39 @@ class Camera:
         self.frame = None
         self.frame_time = 0.0
         self.frame_id = 0
-        self.fps = 0.0
+        self.counter = FpsCounter()
+        self.duplicates = 0            # frames that were the same image as the one before
+        self.total = 0
         self.running = True
         self.cond = threading.Condition()
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
 
     def _loop(self):
-        last = time.perf_counter()
+        prev_small = None
         while self.running:
             ok, frame = self.cap.read()
             now = time.perf_counter()          # time the frame arrived
             if not ok:
                 time.sleep(0.01)
                 continue
-            dt = now - last
-            last = now
-            self.fps = 0.9 * self.fps + 0.1 * (1.0 / max(dt, 1e-3))
+            # Some drivers return the SAME frame again when no new one is ready.
+            # Compare a tiny sample of pixels to skip these copies.
+            small = frame[::24, ::24]
+            self.total += 1
+            if prev_small is not None and np.array_equal(small, prev_small):
+                self.duplicates += 1
+                continue
+            prev_small = small.copy()
+            self.counter.tick(now)
             with self.cond:
                 self.frame, self.frame_time = frame, now
                 self.frame_id += 1
                 self.cond.notify_all()
+
+    @property
+    def fps(self):
+        return self.counter.value
 
     def read(self, last_id, timeout=1.0):
         """Wait for a frame newer than last_id. Returns (id, frame, time) or None."""
