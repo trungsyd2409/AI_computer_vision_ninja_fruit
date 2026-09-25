@@ -126,7 +126,11 @@ class Piece:
         return self._rot(self.local)
 
     def is_off_screen(self):
-        return self.vel[1] > 0 and self.pos[1] - self.radius > config.GAME_HEIGHT + 20
+        """Gone for good: below the screen and falling, or past a side and moving away."""
+        x, y, r = self.pos[0], self.pos[1], self.radius
+        if self.vel[1] > 0 and y - r > config.GAME_HEIGHT + 20:
+            return True
+        return (x + r < -20 and self.vel[0] < 0) or (x - r > config.GAME_WIDTH + 20 and self.vel[0] > 0)
 
     # ---------- slicing ----------
     def hit_by(self, a, b):
@@ -200,20 +204,40 @@ class Piece:
                          config.BORDER_WIDTH, cv2.LINE_AA)
 
 
-def launch_fruit():
-    """Create one fruit below the screen, thrown upwards."""
+def launch_fruit(side=None):
+    """Create one fruit just outside the screen and throw it in.
+
+    side = "bottom": shot up from below (like Fruit Ninja)
+           "left" / "right": flies in from the side in an arc, falls out at the bottom
+    """
     W, H = config.GAME_WIDTH, config.GAME_HEIGHT
+    g = config.GRAVITY
+    if side is None:
+        sides = list(config.SPAWN_SIDES)
+        side = random.choices(sides, weights=[config.SPAWN_SIDES[s] for s in sides])[0]
     shape = random.choice(config.SHAPES)
     r = random.uniform(config.FRUIT_RADIUS_MIN, config.FRUIT_RADIUS_MAX)
     local = make_shape(shape, r)
     radius = float(np.linalg.norm(local, axis=1).max())
-    x0 = random.uniform(0.15 * W, 0.85 * W)
-    y0 = H + radius
-    peak_y = random.uniform(config.PEAK_HEIGHT_MIN, config.PEAK_HEIGHT_MAX) * H
-    vy = -math.sqrt(2 * config.GRAVITY * (y0 - peak_y))
-    flight_time = 2 * -vy / config.GRAVITY
-    target_x = random.uniform(0.25 * W, 0.75 * W)
-    vx = (target_x - x0) / flight_time
+
+    if side == "bottom":
+        x0 = random.uniform(0.15 * W, 0.85 * W)
+        y0 = H + radius
+        peak_y = random.uniform(config.PEAK_HEIGHT_MIN, config.PEAK_HEIGHT_MAX) * H
+        exit_x = random.uniform(0.25 * W, 0.75 * W)       # where it falls back out
+    else:
+        x0 = -radius if side == "left" else W + radius
+        y0 = random.uniform(*config.SIDE_START_HEIGHT) * H
+        top = min(config.PEAK_HEIGHT_MAX * H, y0 - 0.1 * H)  # must go up at least 10% of H
+        peak_y = random.uniform(config.PEAK_HEIGHT_MIN * H, top)
+        far = random.uniform(0.55 * W, 1.0 * W)             # lands on the other half
+        exit_x = far if side == "left" else W - far
+
+    # physics: go up to peak_y, then fall until below the screen (y = H + radius)
+    vy = -math.sqrt(2 * g * (y0 - peak_y))
+    t_up = -vy / g
+    t_down = math.sqrt(2 * (H + radius - peak_y) / g)
+    vx = (exit_x - x0) / (t_up + t_down)
     return Piece(local, (x0, y0), (vx, vy), random_color(),
                  angle=random.uniform(0, 2 * math.pi),
                  spin=random.uniform(-config.SPIN_MAX, config.SPIN_MAX),
@@ -225,7 +249,7 @@ class Spawner:
 
     1. throw a wave (fruits come very close together)
     2. wait until every whole fruit is gone (cut or fell off the screen)
-    3. rest WAVE_REST seconds, then the next (bigger) wave
+    3. rest WAVE_REST seconds, then the next wave (random size WAVE_SIZE_MIN..MAX)
     """
 
     def __init__(self):
@@ -233,14 +257,10 @@ class Spawner:
         self.next_wave = config.WAVE_FIRST_DELAY   # rest countdown (runs only when screen is clear)
         self.queue = []        # [delay, fruit] - fruits of the current wave not thrown yet
 
-    def wave_size(self):
-        size = config.WAVE_SIZE_START + self.wave // config.WAVE_SIZE_GROW_EVERY
-        return min(config.WAVE_SIZE_MAX, config.MAX_FRUITS_ON_SCREEN, size)
-
     def _start_wave(self):
         self.wave += 1
-        size = self.wave_size()
-        size = random.randint(max(1, size - 1), size)
+        size = random.randint(config.WAVE_SIZE_MIN, config.WAVE_SIZE_MAX)   # random 1..5
+        size = min(size, config.MAX_FRUITS_ON_SCREEN)
         delay = 0.0
         for _ in range(size):
             self.queue.append([delay, launch_fruit()])

@@ -193,6 +193,34 @@ def test_spawner_waits_for_wave_to_clear():
     assert sp.wave == 2 and n_first >= 1
 
 
+def test_every_fruit_is_visible():
+    """Fruits from any side must fly through the screen for a while, not just skim an edge."""
+    from fruit import launch_fruit
+    W, H = config.GAME_WIDTH, config.GAME_HEIGHT
+    for side in ("bottom", "left", "right"):
+        for _ in range(200):
+            f = launch_fruit(side)
+            visible, t = 0.0, 0.0
+            while not f.is_off_screen() and t < 6:
+                f.update(1 / 60)
+                t += 1 / 60
+                if 0 < f.pos[0] < W and 0 < f.pos[1] < H:
+                    visible += 1 / 60
+            assert f.is_off_screen(), side          # it leaves the screen in the end
+            assert visible > 0.8, (side, visible)   # and was on screen long enough to cut
+            assert f.pos[1] > H or f.vel[1] > 0     # it left falling (bottom), not flying up
+
+
+def test_wave_size_is_random_1_to_5():
+    from fruit import Spawner
+    sizes = set()
+    for _ in range(200):
+        sp = Spawner()
+        sp._start_wave()
+        sizes.add(len(sp.queue))
+    assert sizes == set(range(config.WAVE_SIZE_MIN, config.WAVE_SIZE_MAX + 1))
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

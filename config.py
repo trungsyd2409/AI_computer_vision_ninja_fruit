@@ -90,12 +90,14 @@ GLOW_BLUR = 3.0              # blur of the glow (bigger = softer, wider)
 # Spawning (difficulty goes up slowly over time)
 # Spawning in WAVES: throw a wave -> wait until all its fruits are cut or fell ->
 # short rest -> next wave. Waves get bigger over time.
-WAVE_REST = 0.5              # seconds of rest after a wave is cleared
+WAVE_REST = 0.8              # seconds of rest after a wave is cleared
 WAVE_FIRST_DELAY = 1.0       # seconds before the very first wave
 WAVE_STAGGER = 0.12          # max delay between 2 fruits of the same wave (0 = all together)
-WAVE_SIZE_START = 2          # fruits in the first waves
-WAVE_SIZE_MAX = 7
-WAVE_SIZE_GROW_EVERY = 3     # +1 fruit per wave every N waves
+WAVE_SIZE_MIN = 1            # each wave has a random number of fruits in [MIN, MAX]
+WAVE_SIZE_MAX = 5
+# Where fruits come from (chance of each). Side fruits fly in from the edge in an arc.
+SPAWN_SIDES = {"bottom": 0.6, "left": 0.2, "right": 0.2}
+SIDE_START_HEIGHT = (0.45, 0.8)   # side fruits enter between 45% and 80% of screen height
 MAX_FRUITS_ON_SCREEN = 16    # whole fruits; keeps FPS stable
 
 # ---------------- Slicing ----------------

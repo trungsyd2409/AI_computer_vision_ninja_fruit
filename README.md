@@ -85,7 +85,8 @@ The top-right corner of the game shows 3 numbers:
 ## Tuning tips
 
 - Cuts do not register → lower `BLADE_MIN_SPEED` in `config.py`.
-- Waves: `WAVE_REST` (rest after a wave is cleared), `WAVE_SIZE_*`, `WAVE_STAGGER`.
+- Waves: `WAVE_REST` (rest after a wave is cleared), `WAVE_SIZE_MIN/MAX` (random size), `WAVE_STAGGER`.
+- Where fruits come from: `SPAWN_SIDES` (bottom / left / right chances), `SIDE_START_HEIGHT`.
 - Neon look → `NEON_COLORS`, `FILL_BRIGHTNESS`, `GLOW_WIDTH`, `GLOW_BLUR`.
 - Game is slow (low FPS) → lower `DETECT_WIDTH` (e.g. 480) or `GAME_WIDTH/GAME_HEIGHT` (e.g. 960×540).
 - Finger cursor shakes → lower `FILTER_MIN_CUTOFF` (more smoothing). Blade feels laggy → raise it.
