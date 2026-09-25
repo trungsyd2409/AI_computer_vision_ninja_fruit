@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+models/*.task
+highscore.json
+.pytest_cache/
+logs/
